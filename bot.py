@@ -1,96 +1,105 @@
-# import asyncio
-# import random
-# from telethon import TelegramClient, events
-# from telethon.tl.types import Message
-# from g4f.client import AsyncClient  # Используем асинхронную версию
+import asyncio
+import logging
+import aiohttp
+import threading
+import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from flask import Flask, jsonify
 
-# # ================= НАСТРОЙКИ (ЗАПОЛНИТЕ ОБЯЗАТЕЛЬНО) =================
-# API_CONFIG = {
-#     'api_id': 39646601,          # Ваш API ID (число) из my.telegram.org
-#     'api_hash': 'aa7a7d27ef17529d21432a67c9c388de',  # Ваш API Hash (строка) из my.telegram.org
-#     'session_name': 'my_userbot_session'  # Название файла сессии (можно любое)
-# }
+# ========== НАСТРОЙКИ ==========
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8604347767:AAGNAm_cjMOi49OFOVHFqesEpuFLP_Db51E")
+PORT = int(os.environ.get("PORT", 8080))
+# ===============================
 
-# # Настройки нейросети g4f (не требует API-ключа!)
-# AI_CONFIG = {
-#     'model': 'gpt-3.5-turbo',   # Модель для использования
-#     # 'provider': None          # Можно оставить None или указать провайдера
-# }
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-# RANDOM_DELAY = (1, 3)           # Случайная задержка перед ответом (секунды)
-# # ===================================================================
+conversation_history = {}
 
-# # Создаем клиента Telethon
-# client = TelegramClient(
-#     API_CONFIG['session_name'],
-#     API_CONFIG['api_id'],
-#     API_CONFIG['api_hash'],
-#     sequential_updates=True  # Обрабатываем сообщения по одному
-# )
+# ---------- Flask для health check ----------
+flask_app = Flask(__name__)
 
-# # Создаем асинхронного клиента g4f для запросов к нейросети
-# ai_client = AsyncClient()
+@flask_app.route('/')
+@flask_app.route('/health')
+def health():
+    return jsonify({"status": "ok", "bot_running": True})
 
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=PORT)
 
-# @client.on(events.NewMessage(incoming=True))
-# async def ai_auto_reply(event):
-#     # --- 1. Проверяем, что сообщение не от нас самих (чтобы не зациклиться) ---
-#     if event.out:
-#         return
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
+# -------------------------------------------
 
-#     # --- 2. Можно добавить проверку на ботов ---
-#     # Если сообщение от бота, можно его пропустить, чтобы не отвечать на чужие автоответы
-#     # if event.sender_id and event.sender_id < 0:  # ID ботов обычно отрицательные
-#     #     return
+async def get_ai_response(user_id: int, user_message: str) -> str:
+    if user_id not in conversation_history:
+        conversation_history[user_id] = []
 
-#     # --- 3. Получаем текст сообщения. Если он пустой (например, фото), пропускаем ---
-#     message_text = event.raw_text
-#     if not message_text or message_text.isspace():
-#         return
+    conversation_history[user_id].append({"role": "user", "content": user_message})
+    if len(conversation_history[user_id]) > 10:
+        conversation_history[user_id] = conversation_history[user_id][-10:]
 
-#     # --- 4. Небольшая "человеческая" задержка перед ответом ---
-#     await asyncio.sleep(random.uniform(*RANDOM_DELAY))
+    url = "https://text.pollinations.ai/"
+    payload = {
+        "messages": conversation_history[user_id],
+        "model": "openai"
+    }
 
-#     sender = await event.get_sender()
-#     sender_name = sender.first_name if sender else "Неизвестный пользователь"
-#     print(f"✉️  Получено сообщение от {sender_name}: {message_text[:50]}...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=30) as resp:
+                if resp.status == 200:
+                    reply_text = await resp.text()
+                    reply_text = reply_text.strip()
+                    if reply_text:
+                        conversation_history[user_id].append({"role": "assistant", "content": reply_text})
+                        return reply_text
+                    else:
+                        logging.warning("Pollinations AI вернул пустой ответ")
+                        return "🤖 Нейросеть вернула пустой ответ. Попробуйте ещё раз."
+                else:
+                    error_text = await resp.text()
+                    logging.error(f"Ошибка HTTP {resp.status}: {error_text}")
+                    return f"❌ Ошибка сервера ИИ (код {resp.status}). Попробуйте позже."
+    except asyncio.TimeoutError:
+        logging.error("Таймаут при запросе к Pollinations AI")
+        return "⏱️ Нейросеть не ответила вовремя. Попробуйте ещё раз."
+    except Exception as e:
+        logging.error(f"Исключение при запросе: {e}")
+        return "⚠️ Произошла техническая ошибка. Пожалуйста, повторите позже."
 
-#     # --- 5. Запрашиваем ответ у нейросети ---
-#     try:
-#         response = await ai_client.chat.completions.create(
-#             model=AI_CONFIG['model'],
-#             messages=[
-#                 {"role": "system", "content": "You are a helpful and friendly AI assistant, chatting on behalf of the user."},
-#                 {"role": "user", "content": message_text}
-#             ],
-#             # provider=AI_CONFIG['provider']  # Раскомментируйте, если хотите указать провайдера
-#         )
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "Привет! Я бот с искусственным интеллектом (через Pollinations AI).\n"
+        "Просто напиши мне что-нибудь, и я отвечу.\n"
+        "Команда /clear — очистить историю диалога."
+    )
 
-#         # Извлекаем текст ответа
-#         reply_text = response.choices[0].message.content.strip()
-#         if not reply_text:
-#             reply_text = "Извините, я не смог сформулировать ответ."
+@dp.message(Command("clear"))
+async def cmd_clear(message: types.Message):
+    user_id = message.from_user.id
+    if user_id in conversation_history:
+        conversation_history[user_id] = []
+        await message.answer("🧹 История нашего диалога очищена.")
+    else:
+        await message.answer("История диалога и так пуста.")
 
-#         # Отправляем ответ в тот же чат
-#         await event.reply(reply_text)
-#         print(f"🤖 Отправлен ответ: {reply_text[:50]}...")
+@dp.business_message()
+async def answer_to_message(message: types.Message):
+    if not message.text or message.text.isspace():
+        await message.answer("Пожалуйста, напишите текстовое сообщение.")
+        return
 
-#     except Exception as e:
-#         # В случае любой ошибки (проблемы с сетью, g4f и т.д.) отправляем пользователю уведомление
-#         error_msg = "Извините, произошла ошибка при обращении к нейросети. Пожалуйста, попробуйте позже."
-#         await event.reply(error_msg)
-#         print(f"❌ Ошибка при запросе к g4f: {e}")
+    await bot.send_chat_action(message.chat.id, action="typing")
+    answer = await get_ai_response(message.from_user.id, message.text)
+    await message.answer(answer + " (это ИИ бот)")
 
+async def main():
+    logging.info("Бот запущен...")
+    await dp.start_polling(bot)
 
-# async def main():
-#     # Запускаем клиента
-#     await client.start()
-#     print("✅ Бот запущен и слушает все входящие сообщения.")
-#     await client.run_until_disconnected()
-
-
-# if __name__ == "__main__":
-#     try:
-#         asyncio.run(main())
-#     except KeyboardInterrupt:
-#         print("👋 Бот остановлен пользователем.")
+if __name__ == "__main__":
+    asyncio.run(main())
