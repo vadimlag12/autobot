@@ -97,6 +97,16 @@ async def answer_to_message(message: types.Message):
     answer = await get_ai_response(message.from_user.id, message.text)
     await message.answer(answer + " (это ИИ бот)")
 
+@dp.message()
+async def answer_to_message(message: types.Message):
+    if not message.text or message.text.isspace():
+        await message.answer("Пожалуйста, напишите текстовое сообщение.")
+        return
+
+    await bot.send_chat_action(message.chat.id, action="typing")
+    answer = await get_ai_response(message.from_user.id, message.text)
+    await message.answer(answer + " (это ИИ бот)")
+
 async def main():
     logging.info("Бот запущен...")
     await dp.start_polling(bot)
