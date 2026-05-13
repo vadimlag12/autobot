@@ -70,7 +70,7 @@ async def get_ai_response(user_id: int, user_message: str) -> str:
         logging.error(f"Исключение при запросе: {e}")
         return "⚠️ Произошла техническая ошибка. Пожалуйста, повторите позже."
 
-@dp.message(Command("start"))
+@dp.business_message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет! Я бот с искусственным интеллектом (через Pollinations AI).\n"
@@ -78,7 +78,7 @@ async def cmd_start(message: types.Message):
         "Команда /clear — очистить историю диалога."
     )
 
-@dp.message(Command("clear"))
+@dp.business_message(Command("clear"))
 async def cmd_clear(message: types.Message):
     user_id = message.from_user.id
     if user_id in conversation_history:
